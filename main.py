@@ -8,117 +8,135 @@ app = FastAPI(title="Sales Intelligence API")
 # VALIDATION HELPERS
 # -------------------------
 
-def validate_email_address(email: str):
+def validate_email_address(email: str) -> int:
+    if not email:
+        return 0
     try:
         validate_email(email)
         return 100
     except EmailNotValidError:
         return 0
 
-def validate_phone_number(phone: str):
+
+def validate_phone_number(phone: str) -> int:
+    if not phone:
+        return 0
     try:
         parsed = phonenumbers.parse(phone, None)
-        if phonenumbers.is_valid_number(parsed):
-            return 100
-        return 40
-    except:
+        return 100 if phonenumbers.is_valid_number(parsed) else 0
+    except Exception:
         return 0
 
+
 # -------------------------
-# MAIN PROCESS ENDPOINT
+# ROLE SCORING
+# -------------------------
+
+def score_role(role: str) -> int:
+    if not role:
+        return 0
+
+    role = role.lower()
+
+    # 🔥 TOP DECISION MAKERS
+    if any(k in role for k in [
+        "ceo", "cto", "co-founder", "founder", "chief",
+        "cso", "cio", "cfo", "president", "vp", "vice president"
+    ]):
+        return 100
+
+    # 🟡 SENIOR / REVENUE / TECH LEADERS
+    if any(k in role for k in [
+        "head", "director", "revops", "revenue",
+        "engineering manager", "product manager", "growth"
+    ]):
+        return 75
+
+    # 🟠 MID LEVEL
+    if any(k in role for k in [
+        "manager", "lead", "consultant"
+    ]):
+        return 50
+
+    # 🔵 LOW INTENT
+    return 25
+
+
+# -------------------------
+# COMPANY SCORING
+# -------------------------
+
+def score_company(company: str) -> int:
+    if not company:
+        return 0
+
+    big_companies = [
+        "google", "alphabet", "meta", "amazon",
+        "apple", "databricks", "openai", "microsoft"
+    ]
+
+    if any(c in company.lower() for c in big_companies):
+        return 100
+
+    return 50
+
+
+# -------------------------
+# MAIN ENDPOINT
 # -------------------------
 
 @app.post("/process")
-def process_lead(lead: dict):
+def process_lead(payload: dict):
+    full_name = payload.get("full_name", "")
+    email = payload.get("email", "")
+    phone = payload.get("phone", "")
+    company = payload.get("company", "")
+    role = payload.get("role", "")
 
     # -------------------------
-    # 1️⃣ CONTACT CONFIDENCE
+    # 1️⃣ SCORING
     # -------------------------
-
-    email = lead.get("email", "")
-    phone = lead.get("phone", "")
 
     email_score = validate_email_address(email)
     phone_score = validate_phone_number(phone)
+    role_score = score_role(role)
+    company_score = score_company(company)
 
-    confidence = round((email_score * 0.6) + (phone_score * 0.4), 2)
+    score = round(
+        email_score * 0.35 +
+        role_score * 0.35 +
+        company_score * 0.20 +
+        phone_score * 0.10
+    )
 
-    if confidence < 60:
-        return {
-            "status": "rejected",
-            "reason": "Low contact confidence",
-            "email_score": email_score,
-            "phone_score": phone_score,
-            "confidence": confidence,
-            "tier": "Rejected"
-        }
-
-    # -------------------------
-    # 2️⃣ BUSINESS SCORING
-    # -------------------------
-
-    score = 0
-
-    # --- Role scoring (LinkedIn-aware) ---
-    role = lead.get("role", "").lower()
-
-    if any(x in role for x in ["chief", "cto", "cdo", "cio"]):
-        score += 35
-    elif any(x in role for x in ["vp", "vice president"]):
-        score += 30
-    elif "head" in role:
-        score += 25
-    elif "manager" in role:
-        score += 18
-    elif "engineer" in role:
-        score += 12
-
-    # --- Company scoring (Clay-enriched or inferred) ---
-    company_size = lead.get("company_size", "").lower()
-    company = lead.get("company", "").lower()
-
-    if company_size in ["enterprise", "1000+", "500+"]:
-        score += 30
-    elif company_size in ["series_d", "series_c"]:
-        score += 22
-    elif company_size in ["series_b"]:
-        score += 18
-    elif company_size:
-        score += 10
-    else:
-        # fallback inference if Clay field missing
-        if any(x in company for x in ["inc", "corp", "enterprise"]):
-            score += 20
-        else:
-            score += 8
-
-    # --- LinkedIn intent signals (Clay usually provides these) ---
-    score += int(lead.get("pain_signal", 0))        # 0–20
-    score += int(lead.get("job_change_signal", 0)) # 0–15
-    score += int(lead.get("hiring_signal", 0))     # 0–15
-
-    # --- Bonus for complete contact ---
-    if email_score == 100 and phone_score == 100:
-        score += 10
-
-    # --- Small confidence weight ---
-    score += confidence * 0.1
-
-    score = round(score, 2)
+    confidence = round(
+        (email_score + role_score + company_score + phone_score) / 4
+    )
 
     # -------------------------
-    # 3️⃣ TIER ASSIGNMENT
+    # 2️⃣ TIER LOGIC (FIXED)
     # -------------------------
 
-    if score >= 80:
+    # 🚨 HARD RULE: EXECUTIVES NEVER GO TO TIER 3
+    executive_keywords = [
+        "ceo", "cto", "founder", "co-founder",
+        "chief", "vp", "vice president", "c-level"
+    ]
+
+    if any(k in role.lower() for k in executive_keywords):
         tier = "Tier 1"
-    elif score >= 55:
+
+    elif score >= 80:
+        tier = "Tier 1"
+
+    elif score >= 50:
         tier = "Tier 2"
+
     else:
         tier = "Tier 3"
 
     # -------------------------
-    # 4️⃣ FINAL RESPONSE
+    # 3️⃣ FINAL RESPONSE
     # -------------------------
 
     return {
